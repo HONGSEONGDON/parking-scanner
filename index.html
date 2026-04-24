@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>번호판 인식기</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Sans+KR:wght@300;400;500;700&family=JetBrains+Mono:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #21262d;
+    --accent: #f0c040;
+    --accent2: #e05c00;
+    --text: #e6edf3;
+    --text2: #7d8590;
+    --border: rgba(240,192,64,0.2);
+    --green: #3fb950;
+    --red: #f85149;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Noto Sans KR', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+  }
+
+  /* 헤더 */
+  .header {
+    padding: 12px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .header-icon {
+    width: 38px; height: 38px;
+    background: var(--accent);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; flex-shrink: 0;
+  }
+  .header-title {
+    font-family: 'Black Han Sans', sans-serif;
+    font-size: 17px; letter-spacing: 1px;
+    color: var(--accent);
+  }
+  .header-sub { font-size: 11px; color: var(--text2); margin-top: 1px; }
+  .header-right { margin-left: auto; text-align: right; }
+  .sheet-badge {
+    background: rgba(240,192,64,0.15);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 11px; color: var(--accent);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* 카메라 */
+  .camera-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4/3;
+    background: #000;
+    overflow: hidden;
+  }
+  #video {
+    width: 100%; height: 100%;
+    object-fit: cover;
+  }
+  canvas#overlay {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
+
+  /* 번호판 가이드 프레임 */
+  .plate-guide {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .plate-box {
+    width: 78%; aspect-ratio: 4.5/1;
+    position: relative;
+    border: 2px dashed rgba(240,192,64,0.5);
+    border-radius: 6px;
+  }
+  .plate-box::before {
+    content: '번호판을 여기에 맞추세요';
+    position: absolute;
+    bottom: -26px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px; color: rgba(240,192,64,0.7);
+    white-space: nowrap;
+  }
+  /* 코너 강조 */
+  .plate-box::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 8px;
+    background: linear-gradient(45deg, rgba(240,192,64,0.1), transparent 40%, transparent 60%, rgba(240,192,64,0.1));
+  }
+  .corner {
+    position: absolute;
+    width: 16px; height: 16px;
+    border-color: var(--accent);
+    border-style: solid;
+  }
+  .corner.tl { top:-2px; left:-2px; border-width:3px 0 0 3px; border-radius:3px 0 0 0; }
+  .corner.tr { top:-2px; right:-2px; border-width:3px 3px 0 0; border-radius:0 3px 0 0; }
+  .corner.bl { bottom:-2px; left:-2px; border-width:0 0 3px 3px; border-radius:0 0 0 3px; }
+  .corner.br { bottom:-2px; right:-2px; border-width:0 3px 3px 0; border-radius:0 0 3px 0; }
+
+  /* 스캔 라인 */
+  .scan-line {
+    position: absolute; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    animation: scanline 2s ease-in-out infinite;
+  }
+  @keyframes scanline {
+    0%,100% { top: 5%; opacity: 0.5; }
+    50% { top: 95%; opacity: 1; }
+  }
+
+  /* 플래시 */
+  .flash {
+    position: absolute; inset: 0;
+    background: white; opacity: 0; pointer-events: none;
+    transition: opacity 0.08s;
+  }
+  .flash.show { opacity: 0.6; }
+
+  /* 인식 결과 오버레이 */
+  .result-overlay {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    padding: 10px 14px;
+    background: linear-gradient(transparent, rgba(0,0,0,0.85));
+    display: flex; align-items: center; gap: 10px;
+  }
+  .result-plate {
+    font-family: 'Black Han Sans', sans-serif;
+    font-size: 22px;
+    color: var(--accent);
+    letter-spacing: 3px;
+    text-shadow: 0 0 20px rgba(240,192,64,0.5);
+    flex: 1;
+  }
+  .result-plate.empty { font-size: 13px; color: var(--text2); font-family: 'Noto Sans KR', sans-serif; letter-spacing: 0; }
+  .save-btn {
+    background: var(--accent);
+    color: #0d1117;
+    border: none; border-radius: 8px;
+    padding: 8px 16px;
+    font-weight: 700; font-size: 13px;
+    cursor: pointer; white-space: nowrap;
+    font-family: 'Noto Sans KR', sans-serif;
+    display: none;
+  }
+  .save-btn.show { display: block; }
+  .save-btn:active { opacity: 0.7; }
+
+  /* 상태 바 */
+  .status-bar {
+    padding: 8px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text2); flex-shrink: 0;
+    transition: all 0.3s;
+  }
+  .status-dot.scanning { background: var(--accent); animation: pulse 1s infinite; }
+  .status-dot.saving { background: #0099ff; animation: pulse 0.5s infinite; }
+  .status-dot.ok { background: var(--green); }
+  .status-dot.error { background: var(--red); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .status-text { font-size: 12px; color: var(--text2); flex: 1; }
+  .scan-toggle {
+    background: var(--accent);
+    color: #0d1117;
+    border: none; border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 12px; font-weight: 700;
+    cursor: pointer;
+    font-family: 'Noto Sans KR', sans-serif;
+  }
+  .scan-toggle.stop { background: var(--red); color: white; }
+  .scan-toggle:active { opacity: 0.7; }
+
+  /* 수동 입력 */
+  .manual-section {
+    padding: 10px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .manual-label { font-size: 10px; color: var(--text2); margin-bottom: 6px; letter-spacing: 0.5px; text-transform: uppercase; }
+  .manual-row { display: flex; gap: 8px; }
+  .manual-input {
+    flex: 1;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 12px;
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px; letter-spacing: 2px;
+    outline: none;
+    transition: border-color 0.2s;
+    text-transform: uppercase;
+  }
+  .manual-input:focus { border-color: var(--accent); }
+  .manual-input::placeholder { color: var(--text2); font-family: 'Noto Sans KR', sans-serif; font-size: 12px; letter-spacing: 0; text-transform: none; }
+  .manual-btn {
+    background: var(--surface2);
+    color: var(--accent);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-weight: 700; font-size: 13px;
+    cursor: pointer; white-space: nowrap;
+    font-family: 'Noto Sans KR', sans-serif;
+  }
+  .manual-btn:active { opacity: 0.7; }
+
+  /* 기록 */
+  .log-section { flex: 1; padding: 12px 16px; overflow-y: auto; }
+  .log-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .log-title { font-size: 11px; color: var(--text2); letter-spacing: 0.5px; text-transform: uppercase; }
+  .log-count {
+    font-size: 11px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 20px; padding: 2px 10px;
+    color: var(--accent); font-family: 'JetBrains Mono', monospace;
+  }
+  .log-list { display: flex; flex-direction: column; gap: 6px; }
+  .log-item {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 14px;
+    display: flex; align-items: center; gap: 12px;
+    animation: slideIn 0.3s ease;
+  }
+  @keyframes slideIn { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
+  .log-item.ok { border-left: 3px solid var(--green); }
+  .log-item.saving { border-left: 3px solid #0099ff; }
+  .log-item.error { border-left: 3px solid var(--red); }
+  .log-num { font-size: 11px; color: var(--text2); font-family: 'JetBrains Mono', monospace; min-width: 22px; text-align: center; }
+  .log-info { flex: 1; min-width: 0; }
+  .log-plate {
+    font-family: 'Black Han Sans', sans-serif;
+    font-size: 16px; color: var(--accent); letter-spacing: 2px;
+  }
+  .log-time { font-size: 11px; color: var(--text2); margin-top: 2px; }
+  .log-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; white-space: nowrap; }
+  .badge-ok { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-saving { background: rgba(0,153,255,0.15); color: #0099ff; }
+  .badge-fail { background: rgba(248,81,73,0.15); color: var(--red); }
+  .empty-log { text-align: center; color: var(--text2); font-size: 13px; padding: 30px 0; opacity: 0.6; }
+
+  /* 토스트 */
+  .toast {
+    position: fixed; top: 70px; left: 50%;
+    transform: translateX(-50%) translateY(-20px);
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 20px; padding: 10px 20px;
+    font-size: 13px; opacity: 0; transition: all 0.3s;
+    z-index: 100; white-space: nowrap; pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.success { border-color: var(--green); color: var(--green); }
+  .toast.fail { border-color: var(--red); color: var(--red); }
+  .toast.info { border-color: var(--accent); color: var(--accent); }
+
+  /* 시작 버튼 */
+  .start-btn {
+    display: block; width: calc(100% - 32px);
+    margin: 0 16px 12px;
+    background: var(--accent);
+    color: #0d1117;
+    border: none; border-radius: 12px;
+    padding: 14px; font-size: 15px; font-weight: 700;
+    cursor: pointer; font-family: 'Noto Sans KR', sans-serif;
+  }
+  .start-btn:active { opacity: 0.8; }
+
+  .camera-placeholder {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 12px; color: var(--text2); font-size: 13px; text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-icon">🚗</div>
+  <div>
+    <div class="header-title">번호판 인식기</div>
+    <div class="header-sub">차량 번호 자동 인식 → Google Sheets 저장</div>
+  </div>
+  <div class="header-right">
+    <div class="sheet-badge" id="sheetBadge">시트 로딩중...</div>
+  </div>
+</div>
+
+<div class="camera-wrap" id="cameraWrap">
+  <div id="cameraPlaceholder" class="camera-placeholder">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+      <circle cx="12" cy="13" r="4"/>
+    </svg>
+    <div>아래 버튼을 눌러<br>카메라를 시작하세요</div>
+  </div>
+  <video id="video" style="display:none;" playsinline autoplay muted></video>
+  <div class="plate-guide" id="plateGuide" style="display:none;">
+    <div class="plate-box">
+      <div class="corner tl"></div>
+      <div class="corner tr"></div>
+      <div class="corner bl"></div>
+      <div class="corner br"></div>
+      <div class="scan-line"></div>
+    </div>
+  </div>
+  <div class="result-overlay" id="resultOverlay" style="display:none;">
+    <div class="result-plate empty" id="resultPlate">번호판을 프레임에 맞춰주세요</div>
+    <button class="save-btn" id="saveBtn" onclick="saveCurrentPlate()">💾 저장</button>
+  </div>
+  <div class="flash" id="flash"></div>
+  <canvas id="overlay" style="display:none;"></canvas>
+</div>
+
+<button class="start-btn" id="startBtn" onclick="startCamera()">📷 카메라 시작</button>
+
+<div class="status-bar">
+  <div class="status-dot" id="statusDot"></div>
+  <span class="status-text" id="statusText">카메라를 시작하세요</span>
+  <button class="scan-toggle" id="scanToggle" style="display:none;" onclick="toggleScan()">⏸ 인식중지</button>
+</div>
+
+<div class="manual-section">
+  <div class="manual-label">직접 입력</div>
+  <div class="manual-row">
+    <input class="manual-input" id="manualInput" type="text" placeholder="번호판 직접 입력 (예: 12가3456)" maxlength="10">
+    <button class="manual-btn" onclick="submitManual()">저장</button>
+  </div>
+</div>
+
+<div class="log-section">
+  <div class="log-header">
+    <span class="log-title">인식 기록</span>
+    <span class="log-count" id="logCount">0건</span>
+  </div>
+  <div class="log-list" id="logList">
+    <div class="empty-log">아직 인식 기록이 없어요</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbysefkNet3OSKJ8wDuTJGPpZikpZKI-uRynxTRVUFN7-8gcYqYlih6pjkxIyTwomFpslQ/exec";
+const urlParams = new URLSearchParams(window.location.search);
+const SHEET_NAME = urlParams.get('sheet') || '주차기록';
+
+document.getElementById('sheetBadge').textContent = '📋 ' + SHEET_NAME;
+
+let logs = [];
+let worker = null;
+let isScanning = false;
+let scanInterval = null;
+let stream = null;
+let currentPlate = '';
+let lastSavedPlate = '';
+let lastSavedTime = 0;
+let cameraStarted = false;
+
+function setStatus(type, text) {
+  document.getElementById('statusDot').className = 'status-dot ' + type;
+  document.getElementById('statusText').textContent = text;
+}
+
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'toast show ' + type;
+  setTimeout(() => t.className = 'toast', 3000);
+}
+
+function flash() {
+  const f = document.getElementById('flash');
+  f.classList.add('show');
+  setTimeout(() => f.classList.remove('show'), 120);
+}
+
+function getNow() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  return `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+}
+
+// 한국 번호판 패턴 추출 (숫자+문자만)
+function extractPlateNumber(text) {
+  // 불필요한 문자 제거, 숫자와 한글만 유지
+  const cleaned = text.replace(/[^0-9가-힣a-zA-Z]/g, '');
+  
+  // 한국 번호판 패턴들
+  const patterns = [
+    /\d{2,3}[가-힣][0-9]{4}/,  // 12가3456, 123가4567
+    /[가-힣]{2}\d{2}[가-힣]\d{4}/,  // 서울12가3456
+    /\d{3}[가-힣]\d{4}/,
+    /\d{2}[가-힣]\d{4}/,
+  ];
+  
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+    if (match) return match[0];
+  }
+  
+  // 패턴 미매칭시 숫자+한글 조합 6자 이상이면 반환
+  const numKor = text.replace(/[^0-9가-힣]/g, '');
+  if (numKor.length >= 6 && numKor.length <= 9) return numKor;
+  
+  return null;
+}
+
+async function initOCR() {
+  setStatus('scanning', 'OCR 엔진 로딩중...');
+  worker = await Tesseract.createWorker('kor+eng', 1, {
+    logger: () => {}
+  });
+  await worker.setParameters({
+    tessedit_char_whitelist: '0123456789가나다라마거너더러머버서어저고노도로모보소오조구누두루무부수우주아바사자허하배',
+    tessedit_pageseg_mode: '7',
+  });
+  setStatus('scanning', '번호판을 프레임에 맞춰주세요');
+  startScanLoop();
+}
+
+function captureFrame() {
+  const video = document.getElementById('video');
+  const canvas = document.createElement('canvas');
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  
+  // 번호판 영역만 크롭 (중앙 78%, 세로 중앙 22% 영역)
+  const cropX = vw * 0.11;
+  const cropY = vh * 0.39;
+  const cropW = vw * 0.78;
+  const cropH = vh * 0.22;
+  
+  canvas.width = cropW;
+  canvas.height = cropH;
+  const ctx = canvas.getContext('2d');
+  
+  // 대비 향상
+  ctx.filter = 'contrast(1.5) brightness(1.1) grayscale(1)';
+  ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+  
+  return canvas.toDataURL('image/jpeg', 0.95);
+}
+
+function startScanLoop() {
+  if (scanInterval) clearInterval(scanInterval);
+  isScanning = true;
+  document.getElementById('scanToggle').style.display = 'block';
+  
+  scanInterval = setInterval(async () => {
+    if (!isScanning || !worker) return;
+    try {
+      const imageData = captureFrame();
+      const { data: { text } } = await worker.recognize(imageData);
+      const plate = extractPlateNumber(text);
+      
+      if (plate && plate.length >= 6) {
+        currentPlate = plate;
+        const resultEl = document.getElementById('resultPlate');
+        resultEl.textContent = plate;
+        resultEl.classList.remove('empty');
+        document.getElementById('saveBtn').classList.add('show');
+        setStatus('ok', '번호판 인식: ' + plate);
+      }
+    } catch(e) {}
+  }, 1500);
+}
+
+function toggleScan() {
+  isScanning = !isScanning;
+  const btn = document.getElementById('scanToggle');
+  if (isScanning) {
+    btn.textContent = '⏸ 인식중지';
+    btn.classList.remove('stop');
+    setStatus('scanning', '번호판을 프레임에 맞춰주세요');
+  } else {
+    btn.textContent = '▶ 인식시작';
+    btn.classList.add('stop');
+    setStatus('', '인식 중지됨');
+  }
+}
+
+async function startCamera() {
+  if (cameraStarted) return;
+  const btn = document.getElementById('startBtn');
+  btn.disabled = true;
+  btn.textContent = '카메라 시작중...';
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: 'environment',
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      }
+    });
+    
+    const video = document.getElementById('video');
+    video.srcObject = stream;
+    video.style.display = 'block';
+    document.getElementById('cameraPlaceholder').style.display = 'none';
+    document.getElementById('plateGuide').style.display = 'flex';
+    document.getElementById('resultOverlay').style.display = 'flex';
+    btn.style.display = 'none';
+    cameraStarted = true;
+    
+    video.onloadedmetadata = () => {
+      initOCR();
+    };
+    
+  } catch(err) {
+    btn.disabled = false;
+    btn.textContent = '📷 카메라 재시도';
+    showToast('카메라 권한을 허용해주세요', 'fail');
+  }
+}
+
+function saveCurrentPlate() {
+  if (!currentPlate) return;
+  const now = Date.now();
+  if (currentPlate === lastSavedPlate && now - lastSavedTime < 5000) {
+    showToast('이미 저장된 번호판이에요', 'info');
+    return;
+  }
+  lastSavedPlate = currentPlate;
+  lastSavedTime = now;
+  flash();
+  if (navigator.vibrate) navigator.vibrate(80);
+  saveToSheets(currentPlate);
+}
+
+function addLog(plate, status) {
+  const id = Date.now();
+  logs.unshift({ id, plate, time: getNow(), status });
+  renderLogs();
+  return id;
+}
+
+function updateLog(id, status) {
+  const item = logs.find(l => l.id === id);
+  if (item) { item.status = status; renderLogs(); }
+}
+
+function renderLogs() {
+  const list = document.getElementById('logList');
+  document.getElementById('logCount').textContent = logs.length + '건';
+  if (!logs.length) {
+    list.innerHTML = '<div class="empty-log">아직 인식 기록이 없어요</div>';
+    return;
+  }
+  list.innerHTML = logs.slice(0,50).map((l, i) => {
+    const badge = l.status === 'ok'
+      ? '<span class="log-badge badge-ok">저장완료</span>'
+      : l.status === 'saving'
+      ? '<span class="log-badge badge-saving">저장중...</span>'
+      : '<span class="log-badge badge-fail">저장실패</span>';
+    return `<div class="log-item ${l.status}">
+      <div class="log-num">${logs.length - i}</div>
+      <div class="log-info">
+        <div class="log-plate">${l.plate}</div>
+        <div class="log-time">${l.time}</div>
+      </div>
+      ${badge}
+    </div>`;
+  }).join('');
+}
+
+function saveToSheets(plate) {
+  const id = addLog(plate, 'saving');
+  setStatus('saving', '저장중: ' + plate);
+  fetch(SCRIPT_URL, {
+    method: 'POST',
+    mode: 'no-cors',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ barcode: plate, sheet: SHEET_NAME })
+  })
+  .then(() => {
+    updateLog(id, 'ok');
+    setStatus('scanning', '저장완료! 계속 인식중...');
+    showToast('✓ 저장완료: ' + plate, 'success');
+  })
+  .catch(() => {
+    updateLog(id, 'error');
+    setStatus('error', '저장실패');
+    showToast('✗ 저장실패 — 인터넷 확인', 'fail');
+  });
+}
+
+function submitManual() {
+  const input = document.getElementById('manualInput');
+  const val = input.value.trim().replace(/[^0-9가-힣a-zA-Z]/g, '');
+  if (!val) { showToast('번호판을 입력해주세요', 'fail'); return; }
+  flash();
+  saveToSheets(val);
+  input.value = '';
+}
+
+document.getElementById('manualInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') submitManual();
+});
+</script>
+</body>
+</html>
