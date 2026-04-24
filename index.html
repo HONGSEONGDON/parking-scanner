@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>원료 바코드 스캐너</title>
+<script src="https://unpkg.com/@zxing/library@0.18.6/umd/index.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #0a0f1e;
+    --surface: #111827;
+    --surface2: #1a2236;
+    --accent: #00d4aa;
+    --accent2: #0099ff;
+    --danger: #ff4d6d;
+    --text: #e8edf5;
+    --text2: #8896a8;
+    --border: rgba(0,212,170,0.2);
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Noto Sans KR', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+  }
+
+  .header {
+    padding: 14px 16px 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .header-icon {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+  .header-title { font-size: 16px; font-weight: 700; }
+  .header-sub { font-size: 11px; color: var(--text2); margin-top: 1px; }
+  .header-status {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--text2);
+  }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text2); transition: all 0.3s;
+  }
+  .status-dot.active { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .status-dot.saving { background: var(--accent2); animation: pulse 0.6s infinite; }
+  .status-dot.error { background: var(--danger); }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  .camera-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    background: #000;
+    overflow: hidden;
+  }
+
+  #video {
+    width: 100%; height: 100%;
+    object-fit: cover;
+  }
+
+  .scan-overlay {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .scan-frame {
+    width: 72%; aspect-ratio: 2.2 / 1;
+    position: relative;
+  }
+  .scan-frame::before, .scan-frame::after,
+  .scan-frame .corner-br, .scan-frame .corner-bl {
+    content: '';
+    position: absolute;
+    width: 28px; height: 28px;
+    border-color: var(--accent);
+    border-style: solid;
+  }
+  .scan-frame::before { top:0; left:0; border-width:3px 0 0 3px; border-radius:4px 0 0 0; }
+  .scan-frame::after  { top:0; right:0; border-width:3px 3px 0 0; border-radius:0 4px 0 0; }
+  .scan-frame .corner-br { bottom:0; right:0; border-width:0 3px 3px 0; border-radius:0 0 4px 0; }
+  .scan-frame .corner-bl { bottom:0; left:0; border-width:0 0 3px 3px; border-radius:0 0 0 4px; }
+
+  .scan-line {
+    position: absolute;
+    left: 4px; right: 4px; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    top: 50%;
+    animation: scanline 2s ease-in-out infinite;
+    border-radius: 1px;
+  }
+  @keyframes scanline {
+    0%,100% { top:8%; opacity:0.4; }
+    50% { top:92%; opacity:1; }
+  }
+  .scan-hint {
+    position: absolute;
+    bottom: -26px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px; color: rgba(255,255,255,0.6);
+    white-space: nowrap;
+  }
+
+  .scan-flash {
+    position: absolute; inset: 0;
+    background: var(--accent);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.1s;
+  }
+  .scan-flash.show { opacity: 0.35; }
+
+  .camera-placeholder {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 12px; color: var(--text2); font-size: 13px; text-align: center; padding: 20px;
+  }
+
+  .manual-section {
+    padding: 12px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .manual-label { font-size: 11px; color: var(--text2); margin-bottom: 8px; letter-spacing: 0.5px; text-transform: uppercase; }
+  .manual-row { display: flex; gap: 8px; }
+  .manual-input {
+    flex: 1;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .manual-input:focus { border-color: var(--accent); }
+  .manual-input::placeholder { color: var(--text2); font-family: 'Noto Sans KR', sans-serif; font-size: 13px; }
+  .manual-btn {
+    background: var(--accent);
+    color: #0a0f1e;
+    border: none; border-radius: 10px;
+    padding: 10px 18px;
+    font-weight: 700; font-size: 13px;
+    cursor: pointer; white-space: nowrap;
+    font-family: 'Noto Sans KR', sans-serif;
+  }
+  .manual-btn:active { opacity: 0.7; }
+
+  .toast {
+    position: fixed;
+    top: 68px; left: 50%;
+    transform: translateX(-50%) translateY(-20px);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 10px 20px;
+    font-size: 13px;
+    opacity: 0; transition: all 0.3s;
+    z-index: 100; white-space: nowrap; pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.success { border-color: var(--accent); color: var(--accent); }
+  .toast.fail { border-color: var(--danger); color: var(--danger); }
+
+  .log-section { flex: 1; padding: 12px 16px; overflow-y: auto; }
+  .log-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .log-title { font-size: 11px; color: var(--text2); letter-spacing: 0.5px; text-transform: uppercase; }
+  .log-count {
+    font-size: 11px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 2px 10px;
+    color: var(--accent);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .log-list { display: flex; flex-direction: column; gap: 6px; }
+  .log-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    display: flex; align-items: center; gap: 12px;
+    animation: slideIn 0.3s ease;
+  }
+  @keyframes slideIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+  .log-item.saving { border-color: var(--accent2); }
+  .log-item.error { border-color: var(--danger); }
+  .log-num { font-size: 11px; color: var(--text2); font-family: 'JetBrains Mono', monospace; min-width: 20px; text-align: center; }
+  .log-info { flex: 1; min-width: 0; }
+  .log-barcode { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log-time { font-size: 11px; color: var(--text2); margin-top: 2px; }
+  .log-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; white-space: nowrap; }
+  .badge-ok { background: rgba(0,212,170,0.15); color: var(--accent); }
+  .badge-saving { background: rgba(0,153,255,0.15); color: var(--accent2); }
+  .badge-fail { background: rgba(255,77,109,0.15); color: var(--danger); }
+  .empty-log { text-align: center; color: var(--text2); font-size: 13px; padding: 30px 0; opacity: 0.6; }
+
+  .start-btn {
+    display: block; width: calc(100% - 32px);
+    margin: 0 16px 14px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #0a0f1e;
+    border: none; border-radius: 14px;
+    padding: 14px;
+    font-size: 15px; font-weight: 700;
+    cursor: pointer;
+    font-family: 'Noto Sans KR', sans-serif;
+    transition: opacity 0.2s;
+  }
+  .start-btn:active { opacity: 0.8; }
+  .start-btn:disabled { opacity: 0.4; cursor: default; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-icon">🧪</div>
+  <div>
+    <div class="header-title">원료 바코드 스캐너</div>
+    <div class="header-sub" id="headerSub">시트 로딩중...</div>
+  </div>
+  <div class="header-status">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">대기중</span>
+  </div>
+</div>
+
+<div class="camera-wrap" id="cameraWrap">
+  <div id="cameraPlaceholder" class="camera-placeholder">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+      <circle cx="12" cy="13" r="4"/>
+    </svg>
+    <div>아래 버튼을 눌러<br>카메라를 시작하세요</div>
+  </div>
+  <video id="video" style="display:none;" playsinline autoplay muted></video>
+  <div class="scan-overlay" id="scanOverlay" style="display:none;">
+    <div class="scan-frame">
+      <div class="corner-br"></div>
+      <div class="corner-bl"></div>
+      <div class="scan-line"></div>
+      <div class="scan-hint">바코드를 사각형 안에 맞춰주세요</div>
+    </div>
+  </div>
+  <div class="scan-flash" id="scanFlash"></div>
+</div>
+
+<button class="start-btn" id="startBtn" onclick="startCamera()">📷 카메라 시작</button>
+
+<div class="manual-section">
+  <div class="manual-label">직접 입력</div>
+  <div class="manual-row">
+    <input class="manual-input" id="manualInput" type="text" placeholder="바코드 번호를 직접 입력..." inputmode="numeric">
+    <button class="manual-btn" onclick="submitManual()">저장</button>
+  </div>
+</div>
+
+<div class="log-section">
+  <div class="log-header">
+    <span class="log-title">스캔 기록</span>
+    <span class="log-count" id="logCount">0건</span>
+  </div>
+  <div class="log-list" id="logList">
+    <div class="empty-log">아직 스캔 기록이 없어요</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbysefkNet3OSKJ8wDuTJGPpZikpZKI-uRynxTRVUFN7-8gcYqYlih6pjkxIyTwomFpslQ/exec";
+
+// URL에서 sheet 이름 읽기 (?sheet=A제품 형태)
+const urlParams = new URLSearchParams(window.location.search);
+const SHEET_NAME = urlParams.get('sheet') || '시트1';
+
+let logs = [];
+let lastCode = '';
+let lastTime = 0;
+let codeReader = null;
+
+function setStatus(type, text) {
+  document.getElementById('statusDot').className = 'status-dot ' + type;
+  document.getElementById('statusText').textContent = text;
+}
+
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  setTimeout(() => t.className = 'toast', 2800);
+}
+
+function flashEffect() {
+  const f = document.getElementById('scanFlash');
+  f.classList.add('show');
+  setTimeout(() => f.classList.remove('show'), 150);
+}
+
+function getNow() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  return `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+}
+
+function addLog(barcode, status) {
+  const id = Date.now();
+  logs.unshift({ id, barcode, time: getNow(), status });
+  renderLogs();
+  return id;
+}
+
+function updateLog(id, status) {
+  const item = logs.find(l => l.id === id);
+  if (item) { item.status = status; renderLogs(); }
+}
+
+function renderLogs() {
+  const list = document.getElementById('logList');
+  document.getElementById('logCount').textContent = logs.length + '건';
+  if (logs.length === 0) {
+    list.innerHTML = '<div class="empty-log">아직 스캔 기록이 없어요</div>';
+    return;
+  }
+  list.innerHTML = logs.slice(0,30).map((l, i) => {
+    const badge = l.status === 'ok'
+      ? '<span class="log-badge badge-ok">저장완료</span>'
+      : l.status === 'saving'
+      ? '<span class="log-badge badge-saving">저장중...</span>'
+      : '<span class="log-badge badge-fail">저장실패</span>';
+    return `<div class="log-item ${l.status}">
+      <div class="log-num">${logs.length - i}</div>
+      <div class="log-info">
+        <div class="log-barcode">${l.barcode}</div>
+        <div class="log-time">${l.time}</div>
+      </div>
+      ${badge}
+    </div>`;
+  }).join('');
+}
+
+// 헤더에 현재 시트 이름 표시
+document.getElementById('headerSub').textContent = '저장 시트: ' + SHEET_NAME;
+
+function saveToSheets(barcode) {
+  const id = addLog(barcode, 'saving');
+  setStatus('saving', '저장중...');
+  fetch(SCRIPT_URL, {
+    method: 'POST',
+    mode: 'no-cors',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ barcode, sheet: SHEET_NAME })
+  })
+  .then(() => {
+    updateLog(id, 'ok');
+    setStatus('active', '스캔 준비');
+    showToast('✓ 저장완료: ' + barcode, 'success');
+  })
+  .catch(() => {
+    updateLog(id, 'error');
+    setStatus('error', '저장실패');
+    showToast('✗ 저장실패 — 인터넷 확인', 'fail');
+  });
+}
+
+function startCamera() {
+  const btn = document.getElementById('startBtn');
+  btn.disabled = true;
+  btn.textContent = '카메라 시작중...';
+
+  document.getElementById('cameraPlaceholder').style.display = 'none';
+  const video = document.getElementById('video');
+  video.style.display = 'block';
+  document.getElementById('scanOverlay').style.display = 'flex';
+
+  const hints = new Map();
+  const formats = [
+    ZXing.BarcodeFormat.EAN_13,
+    ZXing.BarcodeFormat.EAN_8,
+    ZXing.BarcodeFormat.CODE_128,
+    ZXing.BarcodeFormat.CODE_39,
+    ZXing.BarcodeFormat.UPC_A,
+    ZXing.BarcodeFormat.UPC_E,
+    ZXing.BarcodeFormat.QR_CODE,
+    ZXing.BarcodeFormat.DATA_MATRIX,
+  ];
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+
+  codeReader = new ZXing.BrowserMultiFormatReader(hints);
+
+  codeReader.listVideoInputDevices().then(devices => {
+    // 후면 카메라 찾기
+    let deviceId = undefined;
+    if (devices.length > 0) {
+      const back = devices.find(d =>
+        d.label.toLowerCase().includes('back') ||
+        d.label.toLowerCase().includes('rear') ||
+        d.label.toLowerCase().includes('environment') ||
+        d.label.includes('0,')
+      );
+      deviceId = back ? back.deviceId : devices[devices.length - 1].deviceId;
+    }
+
+    codeReader.decodeFromVideoDevice(deviceId, 'video', (result, err) => {
+      if (result) {
+        const code = result.getText();
+        const now = Date.now();
+        if (code === lastCode && now - lastTime < 3000) return;
+        lastCode = code;
+        lastTime = now;
+        flashEffect();
+        if (navigator.vibrate) navigator.vibrate(80);
+        saveToSheets(code);
+      }
+    });
+
+    btn.style.display = 'none';
+    setStatus('active', '스캔 준비');
+
+  }).catch(err => {
+    btn.disabled = false;
+    btn.textContent = '📷 카메라 재시도';
+    setStatus('error', '카메라 오류');
+    showToast('카메라 권한을 허용해주세요', 'fail');
+  });
+}
+
+function submitManual() {
+  const input = document.getElementById('manualInput');
+  const val = input.value.trim();
+  if (!val) { showToast('바코드 번호를 입력해주세요', 'fail'); return; }
+  saveToSheets(val);
+  input.value = '';
+}
+
+document.getElementById('manualInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') submitManual();
+});
+</script>
+</body>
+</html>
